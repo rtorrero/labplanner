@@ -1,94 +1,139 @@
+// mainwindow.cpp
 #include "mainwindow.h"
+#include "csvparser.h"
+#include "processor.h"
+
 #include <QFileDialog>
 #include <QMessageBox>
-#include <QTableWidgetItem>
-#include "./ui_mainwindow.h"
+#include <QTableView>
+#include <QVBoxLayout>
+#include <QPushButton>
+#include <QListWidget>
+#include <QListWidgetItem>
+#include <QTextStream>
+#include <QFile>
+#include <QStandardItem>
+#include <QHeaderView>
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent)
-    , ui(new Ui::MainWindow)
+    : QMainWindow(parent),
+    model(new QStandardItemModel(this))
 {
-    ui->setupUi(this);
+    // Crear widget central y asignar layout vertical
+    QWidget *centralWidget = new QWidget(this);
+    QVBoxLayout *layout = new QVBoxLayout(centralWidget);
 
-    // Hacer que las columnas se expandan
-    ui->tableWidget->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    // Agregar QTableView para visualizar los datos CSV
+    QTableView *tableView = new QTableView(centralWidget);
+    tableView->setObjectName("tableView");
+    tableView->setModel(model);
+    // Hacer que las columnas se ajusten automáticamente al ancho de la ventana
+    tableView->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    layout->addWidget(tableView);
 
-    // Configuramos la tabla con 6 columnas
-    ui->tableWidget->setColumnCount(6);
-    QStringList headers = {"ID Exp", "Variante", "Réplica", "BarleyMalt", "DAP", "Time"};
-    ui->tableWidget->setHorizontalHeaderLabels(headers);
+    // Agregar QListWidget para mostrar los encabezados del CSV (se llenará dinámicamente)
+    listWidgetColumns = new QListWidget(centralWidget);
+    listWidgetColumns->setObjectName("listWidgetColumns");
+    layout->addWidget(listWidgetColumns);
+
+    // Agregar botón "Cargar CSV"
+    QPushButton *loadButton = new QPushButton("Cargar CSV", centralWidget);
+    loadButton->setObjectName("pushButtonLoad");
+    layout->addWidget(loadButton);
+    connect(loadButton, &QPushButton::clicked, this, &MainWindow::onLoadCsvClicked);
+
+    // Agregar botón "Exportar Instrucciones"
+    QPushButton *exportButton = new QPushButton("Exportar Instrucciones", centralWidget);
+    exportButton->setObjectName("pushButtonExport");
+    layout->addWidget(exportButton);
+    connect(exportButton, &QPushButton::clicked, this, &MainWindow::onExportCsvClicked);
+
+    setCentralWidget(centralWidget);
+    setWindowTitle("Software de Preparación de Muestras");
 }
 
 MainWindow::~MainWindow()
 {
-    delete ui;
 }
 
-// SLOT: Botón "Cargar Datos"
-void MainWindow::on_btnCargarDatos_clicked()
+void MainWindow::onLoadCsvClicked()
 {
-    // Dialog para seleccionar el fichero CSV
-    QString fileName = QFileDialog::getOpenFileName(this,
-                                                    "Seleccionar archivo CSV",
-                                                    "",
-                                                    "CSV Files (*.csv);;All Files (*)");
+    QString fileName = QFileDialog::getOpenFileName(this, tr("Abrir Archivo CSV"), "", tr("CSV Files (*.csv)"));
+    if (fileName.isEmpty())
+        return;
 
-    if (fileName.isEmpty()) {
-        return; // usuario canceló
+    QList<QStringList> data = CsvParser::parse(fileName);
+    if (data.isEmpty()) {
+        QMessageBox::warning(this, tr("Error"), tr("No se pudo leer el archivo o está vacío."));
+        return;
+    }
+    // Almacenar los datos para posteriores cálculos
+    csvData = data;
+    loadData(data);
+}
+
+void MainWindow::loadData(const QList<QStringList> &data)
+{
+    // Limpiar el modelo y la lista de columnas
+    model->clear();
+    listWidgetColumns->clear();
+
+    if (data.isEmpty())
+        return;
+
+    // La primera fila se asume como encabezado
+    QStringList headers = data.first();
+    model->setHorizontalHeaderLabels(headers);
+
+    // Llenar el QListWidget con cada encabezado y configurarlo como checkable (por defecto, marcado)
+    for (const QString &header : headers) {
+        QListWidgetItem *item = new QListWidgetItem(header, listWidgetColumns);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(Qt::Checked);
+        listWidgetColumns->addItem(item);
     }
 
-    std::vector<Experimento> temp;
-    bool ok = cargarExperimentosDeCSV(fileName.toStdString(), temp);
+    // Agregar el resto de las filas al modelo
+    for (int i = 1; i < data.size(); ++i) {
+        const QStringList &row = data.at(i);
+        QList<QStandardItem*> items;
+        for (const QString &cell : row) {
+            items.append(new QStandardItem(cell));
+        }
+        model->appendRow(items);
+    }
+}
 
-    if (!ok) {
-        QMessageBox::warning(this, "Error", "No se pudo cargar el archivo CSV.");
+void MainWindow::onExportCsvClicked()
+{
+    // Recoger los índices de las columnas seleccionadas (en el mismo orden que aparecen en el QListWidget)
+    QVector<int> selectedColumnIndices;
+    for (int i = 0; i < listWidgetColumns->count(); ++i) {
+        QListWidgetItem *item = listWidgetColumns->item(i);
+        if (item->checkState() == Qt::Checked)
+            selectedColumnIndices.append(i);
+    }
+    if (selectedColumnIndices.isEmpty()) {
+        QMessageBox::warning(this, tr("Error"), tr("No se ha seleccionado ninguna columna para exportar."));
         return;
     }
 
-    // Guardamos en nuestra variable miembro
-    m_experimentos = temp;
+    // Generar las instrucciones en formato Markdown usando la función del Processor
+    QString markdown = Processor::generateMarkdownInstructions(csvData, selectedColumnIndices);
 
-    QMessageBox::information(this,
-                             "Datos Cargados",
-                             QString("Se han cargado %1 experimentos.").arg(m_experimentos.size()));
-}
+    // Guardar el resultado en un archivo Markdown (.md)
+    QString fileName = QFileDialog::getSaveFileName(this, tr("Guardar Instrucciones Markdown"), "", tr("Markdown Files (*.md)"));
+    if (fileName.isEmpty())
+        return;
 
-// SLOT: Botón "Generar Preparaciones"
-void MainWindow::on_btnGenerarPreparaciones_clicked()
-{
-    if (m_experimentos.empty()) {
-        QMessageBox::warning(this, "Atención", "No hay experimentos cargados aún.");
+    QFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("Error"), tr("No se pudo guardar el archivo."));
         return;
     }
 
-    // Generar las preparaciones
-    auto preparaciones = generarPreparaciones(m_experimentos);
-
-    // Llenar la tabla
-    ui->tableWidget->setRowCount(static_cast<int>(preparaciones.size()));
-
-    for (int row = 0; row < (int) preparaciones.size(); ++row) {
-        const auto &p = preparaciones[row];
-
-        // Columna 0: ID
-        ui->tableWidget->setItem(row, 0, new QTableWidgetItem(QString::number(p.idExperimento)));
-
-        // Columna 1: Variante
-        ui->tableWidget->setItem(row, 1, new QTableWidgetItem(QString::fromStdString(p.variante)));
-
-        // Columna 2: Réplica
-        ui->tableWidget->setItem(row, 2, new QTableWidgetItem(QString::number(p.replica)));
-
-        // Columna 3: BarleyMalt
-        ui->tableWidget->setItem(row, 3, new QTableWidgetItem(QString::number(p.barleyMaltFinal)));
-
-        // Columna 4: DAP
-        ui->tableWidget->setItem(row, 4, new QTableWidgetItem(QString::number(p.DAPFinal)));
-
-        // Columna 5: Time
-        ui->tableWidget->setItem(row, 5, new QTableWidgetItem(QString::number(p.time)));
-    }
-
-    // Ajustamos el tamaño de las columnas para que se vean bien
-    ui->tableWidget->resizeColumnsToContents();
+    QTextStream out(&file);
+    out << markdown;
+    file.close();
+    QMessageBox::information(this, tr("Exportar"), tr("El archivo se ha exportado correctamente."));
 }

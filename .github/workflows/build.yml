@@ -1,0 +1,85 @@
+name: Build Qt Project
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-matrix:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v2
+
+      # -------------------------
+      # LINUX BUILD (ubuntu-latest)
+      # -------------------------
+      - name: Install dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+          sudo apt-get install -y qtbase5-dev qt6-base-dev
+
+      - name: Configure and build (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          mkdir build
+          cd build
+          cmake -DCMAKE_BUILD_TYPE=Release ..
+          cmake --build . --config Release
+
+      - name: Archive artifacts (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-binaries
+          path: build/*
+
+      # -------------------------
+      # WINDOWS BUILD (windows-latest)
+      # -------------------------
+      - name: Set up MSYS2
+        if: matrix.os == 'windows-latest'
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-qt6
+          msystem: MINGW64
+
+      - name: Configure and build (Windows - MinGW)
+        if: matrix.os == 'windows-latest'
+        shell: msys2 {0}
+        run: |
+          mkdir build
+          cd build
+          cmake -G "MinGW Makefiles" -DCMAKE_PREFIX_PATH=/mingw64 -DCMAKE_BUILD_TYPE=Release ..
+          cmake --build . --config Release
+
+      - name: Run windeployqt
+        if: matrix.os == 'windows-latest'
+        shell: msys2 {0}
+        run: |
+          cd build
+          which windeployqt || which windeployqt-qt6
+          windeployqt-qt6 --release LabPlanner.exe
+          cp /mingw64/bin/*.dll .
+
+      - name: Archive artifacts (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-binaries
+          path: build/*
+
